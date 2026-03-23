@@ -16,3 +16,9 @@ export const TAB_ACQUIRE_TIMEOUT_MS = 60_000;
 export const DEFAULT_PARALLEL_TABS = 3;
 export const MAX_PARALLEL_TABS = 5;
 export const DEFAULT_MAX_DEPTH = 10;
+
+// Singleton instance lock
+export const WS_CLOSE_TAKEOVER = 4100;
+export const SINGLETON_LOCK_TIMEOUT_MS = 5_000;
+export const SIGKILL_TIMEOUT_MS = 2_000;
+export const TAKEOVER_RETRY_MS = 500;

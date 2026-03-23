@@ -3,8 +3,10 @@
 // Browser handles WebSocket ping/pong at the protocol level — no application code needed.
 
 const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 30_000;
+const MAX_BACKOFF_MS = 5_000;
 const BACKOFF_MULTIPLIER = 2;
+const TAKEOVER_RETRY_MS = 500;
+const TAKEOVER_CLOSE_CODE = 4100;
 const VERSION = '1.0.0';
 const DEFAULT_PORT = 9222;
 
@@ -14,6 +16,7 @@ export class WebSocketClient {
   #reconnectTimer = null;
   #onMessage = null;
   #port = DEFAULT_PORT;
+  #intentionalDisconnect = false;
 
   /**
    * @param {function(object): void} onMessage — called with parsed JSON-RPC messages
@@ -94,7 +97,11 @@ export class WebSocketClient {
     this.#ws.onclose = (event) => {
       console.log(`[MCP] WebSocket closed: code=${event.code} reason=${event.reason}`);
       this.#ws = null;
-      this.#scheduleReconnect();
+      if (this.#intentionalDisconnect) {
+        this.#intentionalDisconnect = false;
+        return;
+      }
+      this.#scheduleReconnect(event.code);
     };
 
     this.#ws.onerror = (event) => {
@@ -108,6 +115,7 @@ export class WebSocketClient {
    */
   disconnect() {
     this.#clearReconnectTimer();
+    this.#intentionalDisconnect = true;
     if (this.#ws) {
       try {
         this.#ws.close(1000, 'Client disconnect');
@@ -138,19 +146,31 @@ export class WebSocketClient {
   }
 
   /**
-   * Schedule a reconnection attempt with exponential backoff.
+   * Schedule a reconnection attempt with strategy based on close code.
+   * Code 4100 (server takeover) = fixed 500ms retry.
+   * Otherwise = exponential backoff capped at 5s.
+   * @param {number} [closeCode] — WebSocket close code from the server
    */
-  #scheduleReconnect() {
+  #scheduleReconnect(closeCode) {
     this.#clearReconnectTimer();
 
-    console.log(`[MCP] Reconnecting in ${this.#backoffMs}ms...`);
+    let delayMs;
+
+    if (closeCode === TAKEOVER_CLOSE_CODE) {
+      // Server takeover — reconnect fast with fixed delay
+      delayMs = TAKEOVER_RETRY_MS;
+      this.#backoffMs = INITIAL_BACKOFF_MS; // Reset backoff for next disconnect
+    } else {
+      // Normal exponential backoff (crash / unknown close)
+      delayMs = this.#backoffMs;
+      this.#backoffMs = Math.min(this.#backoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
+    }
+
+    console.log(`[MCP] Reconnecting in ${delayMs}ms (code=${closeCode ?? 'none'})...`);
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
       this.connect();
-    }, this.#backoffMs);
-
-    // Increase backoff for next attempt
-    this.#backoffMs = Math.min(this.#backoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
+    }, delayMs);
   }
 
   /**

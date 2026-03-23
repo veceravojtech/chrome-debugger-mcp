@@ -21,6 +21,7 @@ import {
 
 export class Bridge extends EventEmitter {
   private readonly wss: WebSocketServer;
+  private readonly readyPromise!: Promise<void>;
   private readonly stateMachine = new ConnectionStateMachine();
   private readonly pendingRequests = new PendingRequests();
   private readonly commandQueue = new CommandQueue(COMMAND_TIMEOUT_MS);
@@ -48,6 +49,11 @@ export class Bridge extends EventEmitter {
       port: this.port,
       host: '127.0.0.1',
       clientTracking: true,
+    });
+
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.wss.once('listening', () => resolve());
+      this.wss.once('error', (err) => reject(err));
     });
 
     this.wss.on('connection', (ws) => this.handleConnection(ws));
@@ -308,7 +314,11 @@ export class Bridge extends EventEmitter {
     return this.port;
   }
 
-  async close(): Promise<void> {
+  ready(): Promise<void> {
+    return this.readyPromise;
+  }
+
+  async close(closeCode: number = 1001, closeReason: string = 'Going Away'): Promise<void> {
     this.stopKeepalive();
 
     const shutdownError = new McpError(
@@ -323,7 +333,7 @@ export class Bridge extends EventEmitter {
     this.commandQueue.rejectAll(shutdownError);
 
     if (this.client && this.client.readyState === WebSocket.OPEN) {
-      this.client.close(1001, 'Going Away');
+      this.client.close(closeCode, closeReason);
     }
 
     return new Promise<void>((resolve) => {

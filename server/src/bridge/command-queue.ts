@@ -28,7 +28,7 @@ export class CommandQueue {
             ErrorCode.EXTENSION_DISCONNECTED,
             `Queued command ${request.method} timed out after ${this.timeoutMs}ms`,
             { requestId: request.id, method: request.method },
-            'The Chrome extension is not connected. Ensure it is installed and active.',
+            'The Chrome extension is not connected. It may be reconnecting after a server restart. Retry in a few seconds, or ensure the extension is installed and active.',
             true,
           ),
         );
