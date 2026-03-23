@@ -1,0 +1,29 @@
+{
+  "name": "chrome-debugger-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that controls Chrome via extension in your real profile",
+  "type": "module",
+  "bin": {
+    "chrome-debugger-mcp": "./bin/chrome-debugger-mcp.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node bin/chrome-debugger-mcp.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27",
+    "ws": "^8.19",
+    "zod": "^4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9",
+    "@types/node": "^22",
+    "@types/ws": "^8",
+    "vitest": "^4.1"
+  }
+}

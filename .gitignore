@@ -1,0 +1,15 @@
+build/
+node_modules/
+.DS_Store
+
+
+.claude/
+.idea/
+_bmad/
+_bmad-output/
+_bmad/*
+_bmad-output/*
+.claude/*
+.tmux-cli
+.tmux-session
+scripts/hooks/*
