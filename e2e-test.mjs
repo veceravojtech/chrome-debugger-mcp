@@ -147,6 +147,7 @@ async function run() {
   assert('Has execute_js tool', toolNames.includes('execute_js'));
   assert('Has discover_links tool', toolNames.includes('discover_links'));
   assert('Has crawl_site tool', toolNames.includes('crawl_site'));
+  assert('Has execute_on_page tool', toolNames.includes('execute_on_page'));
 
   // ── Step 4: Call status tool (no extension connected yet) ─────────────
   console.log('▶ Calling status tool (before extension connects)');
@@ -208,6 +209,10 @@ async function run() {
     { id: 2, url: 'https://github.com/', title: 'GitHub', active: false },
   ];
 
+  // State for tab reuse simulation
+  const openedTabs = new Map(); // url -> tabId
+  let nextMockTabId = 100;
+
   function setupResponder(socket) {
     socket.on('message', (data) => {
       const msg = JSON.parse(data.toString());
@@ -218,9 +223,62 @@ async function run() {
         case 'tabs.list':
           result = mockTabs;
           break;
-        case 'tabs.open':
-          result = { id: 3, url: msg.params?.url, title: 'New Tab', active: true };
+        case 'tabs.open': {
+          const url = msg.params?.url;
+          const reuseTab = msg.params?.reuseTab;
+          const reqTabId = msg.params?.tabId;
+
+          // Simulate timeout for specific URL
+          if (url === 'https://timeout-test.invalid/') {
+            socket.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: { code: -32603, message: 'Page failed to load within 30000ms' },
+            }));
+            return;
+          }
+
+          // Direct navigation by tabId
+          if (reqTabId !== undefined) {
+            // Simulate invalid tabId
+            if (reqTabId === 99999) {
+              socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: msg.id,
+                error: { code: -32603, message: `Tab ${reqTabId} not found` },
+              }));
+              return;
+            }
+            result = {
+              tabId: reqTabId,
+              url,
+              title: 'Navigated Page',
+              navigated: true,
+              reused: false,
+            };
+            break;
+          }
+
+          // Tab reuse: return same tabId when URL was previously opened
+          if (reuseTab !== false && openedTabs.has(url)) {
+            result = {
+              tabId: openedTabs.get(url),
+              url,
+              title: 'Loaded Page',
+              reused: true,
+            };
+          } else {
+            const tabId = nextMockTabId++;
+            openedTabs.set(url, tabId);
+            result = {
+              tabId,
+              url,
+              title: 'Loaded Page',
+              reused: false,
+            };
+          }
           break;
+        }
         case 'tabs.close':
           result = { closed: true, tabId: msg.params?.tabId };
           break;
@@ -257,6 +315,38 @@ async function run() {
             { url: 'https://example.com/contact', text: 'Contact' },
           ];
           break;
+        case 'page.executeOnPage': {
+          const url = msg.params?.url;
+          const script = msg.params?.script;
+
+          // Simulate timeout for specific URL (same URL used by open_url timeout test)
+          if (url === 'https://timeout-test.invalid/') {
+            socket.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: { code: -32603, message: 'Page failed to load within 30000ms' },
+            }));
+            return;
+          }
+
+          // Simulate script error when script contains 'throw'
+          if (script && script.includes('throw')) {
+            socket.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: { code: -32603, message: `Script execution failed: ${script}` },
+            }));
+            return;
+          }
+
+          // Happy path — simulate successful atomic execution
+          result = {
+            result: `Executed: ${script}`,
+            url,
+            duration: 150,
+          };
+          break;
+        }
         case 'screenshot.capture':
           result = { dataUrl: 'data:image/png;base64,iVBOR...', format: 'png' };
           break;
@@ -313,7 +403,9 @@ async function run() {
 
   const openResult = JSON.parse(openUrlResp.result?.content?.[0]?.text || '{}');
   assert('New tab has correct URL', openResult.url === 'https://nodejs.org/');
-  assert('New tab has ID', typeof openResult.id === 'number');
+  assert('New tab has tabId', typeof openResult.tabId === 'number');
+  assert('New tab has title', typeof openResult.title === 'string' && openResult.title.length > 0);
+  assert('New tab is not reused', openResult.reused === false);
 
   // ── Step 11: Call get_page_source ─────────────────────────────────────
   console.log('▶ Calling get_page_source tool');
@@ -424,7 +516,139 @@ async function run() {
   assert('Returns 2 links', Array.isArray(links) && links.length === 2);
   assert('First link is /about', links[0]?.url === 'https://example.com/about');
 
-  // ── Step 20: Test extension disconnect / reconnect handling ───────────
+  // ── Step 20: Test open_url tab reuse ──────────────────────────────────
+  console.log('▶ Testing open_url tab reuse');
+  const reuseId = mcpRequest(server, 'tools/call', {
+    name: 'open_url',
+    arguments: { url: 'https://nodejs.org/' },
+  });
+  const reuseResp = await waitForResponse(responses, reuseId);
+  assert('tab reuse returns result', !!reuseResp.result, JSON.stringify(reuseResp.error));
+
+  const reuseResult = JSON.parse(reuseResp.result?.content?.[0]?.text || '{}');
+  assert('Reused tab has same tabId', reuseResult.tabId === openResult.tabId);
+  assert('Reused tab reports reused: true', reuseResult.reused === true);
+  assert('Reused tab has title', typeof reuseResult.title === 'string' && reuseResult.title.length > 0);
+
+  // ── Step 21: Test open_url with reuseTab=false ──────────────────────
+  console.log('▶ Testing open_url reuseTab=false');
+  const forceNewId = mcpRequest(server, 'tools/call', {
+    name: 'open_url',
+    arguments: { url: 'https://nodejs.org/', reuseTab: false },
+  });
+  const forceNewResp = await waitForResponse(responses, forceNewId);
+  assert('force new tab returns result', !!forceNewResp.result, JSON.stringify(forceNewResp.error));
+
+  const forceNewResult = JSON.parse(forceNewResp.result?.content?.[0]?.text || '{}');
+  assert('Force new tab has different tabId', forceNewResult.tabId !== openResult.tabId);
+  assert('Force new tab reports reused: false', forceNewResult.reused === false);
+
+  // ── Step 22: Test open_url timeout error handling ───────────────────
+  console.log('▶ Testing open_url timeout error handling');
+  const timeoutId = mcpRequest(server, 'tools/call', {
+    name: 'open_url',
+    arguments: { url: 'https://timeout-test.invalid/' },
+  });
+  const timeoutResp = await waitForResponse(responses, timeoutId);
+  const isErrorResponse = !!timeoutResp.error || timeoutResp.result?.isError;
+  assert('timeout returns error response', isErrorResponse, 'Expected error but got result');
+  const timeoutErrMsg = timeoutResp.error?.message || timeoutResp.result?.content?.[0]?.text || '';
+  assert('timeout error contains URL', timeoutErrMsg.includes('timeout-test.invalid'),
+    `error: ${timeoutErrMsg}`);
+
+  // ── Step 23: Test open_url with tabId (navigate existing tab) ──────
+  console.log('▶ Testing open_url with tabId (navigate existing tab)');
+  const navTabId = mcpRequest(server, 'tools/call', {
+    name: 'open_url',
+    arguments: { url: 'https://new-destination.com/', tabId: openResult.tabId },
+  });
+  const navTabResp = await waitForResponse(responses, navTabId);
+  assert('open_url tabId returns result', !!navTabResp.result, JSON.stringify(navTabResp.error));
+
+  const navResult = JSON.parse(navTabResp.result?.content?.[0]?.text || '{}');
+  assert('Navigated tab has same tabId', navResult.tabId === openResult.tabId);
+  assert('Navigated tab has new URL', navResult.url === 'https://new-destination.com/');
+  assert('Navigated tab reports navigated: true', navResult.navigated === true);
+  assert('Navigated tab reports reused: false', navResult.reused === false);
+
+  // ── Step 24: Test open_url with invalid tabId ─────────────────────
+  console.log('▶ Testing open_url with invalid tabId');
+  const badTabId = mcpRequest(server, 'tools/call', {
+    name: 'open_url',
+    arguments: { url: 'https://example.com/', tabId: 99999 },
+  });
+  const badTabResp = await waitForResponse(responses, badTabId);
+  const isBadTabErr = !!badTabResp.error || badTabResp.result?.isError;
+  assert('invalid tabId returns error response', isBadTabErr, 'Expected error but got result');
+  const badTabErrMsg = badTabResp.error?.message || badTabResp.result?.content?.[0]?.text || '';
+  assert('invalid tabId error mentions not found', badTabErrMsg.includes('not found') || badTabErrMsg.includes('does not exist'),
+    `error: ${badTabErrMsg}`);
+
+  // ── Step 25: Test execute_on_page happy path ────────────────────────
+  console.log('▶ Testing execute_on_page happy path');
+  const execPageId = mcpRequest(server, 'tools/call', {
+    name: 'execute_on_page',
+    arguments: { url: 'https://example.com', script: 'document.title' },
+  });
+  const execPageResp = await waitForResponse(responses, execPageId);
+  assert('execute_on_page returns result', !!execPageResp.result, JSON.stringify(execPageResp.error));
+
+  const execPageResult = JSON.parse(execPageResp.result?.content?.[0]?.text || '{}');
+  assert('execute_on_page has result field', execPageResult.result !== undefined);
+  assert('execute_on_page has url field', execPageResult.url === 'https://example.com');
+  assert('execute_on_page has duration field', typeof execPageResult.duration === 'number');
+
+  // Verify no tab leakage — list_tabs should still return same 2 mock tabs
+  const tabCheckId1 = mcpRequest(server, 'tools/call', {
+    name: 'list_tabs',
+    arguments: {},
+  });
+  const tabCheckResp1 = await waitForResponse(responses, tabCheckId1);
+  const tabCheck1 = JSON.parse(tabCheckResp1.result?.content?.[0]?.text || '[]');
+  assert('No tab leakage after execute_on_page', Array.isArray(tabCheck1) && tabCheck1.length === 2);
+
+  // ── Step 24: Test execute_on_page script error ──────────────────────
+  console.log('▶ Testing execute_on_page script error');
+  const execErrId = mcpRequest(server, 'tools/call', {
+    name: 'execute_on_page',
+    arguments: { url: 'https://example.com', script: 'throw new Error("test")' },
+  });
+  const execErrResp = await waitForResponse(responses, execErrId);
+  const isScriptErr = !!execErrResp.error || execErrResp.result?.isError;
+  assert('script error returns error response', isScriptErr, 'Expected error but got result');
+
+  // Verify no tab leakage after script error
+  const tabCheckId2 = mcpRequest(server, 'tools/call', {
+    name: 'list_tabs',
+    arguments: {},
+  });
+  const tabCheckResp2 = await waitForResponse(responses, tabCheckId2);
+  const tabCheck2 = JSON.parse(tabCheckResp2.result?.content?.[0]?.text || '[]');
+  assert('No tab leakage after script error', Array.isArray(tabCheck2) && tabCheck2.length === 2);
+
+  // ── Step 25: Test execute_on_page timeout ───────────────────────────
+  console.log('▶ Testing execute_on_page timeout');
+  const execTimeoutId = mcpRequest(server, 'tools/call', {
+    name: 'execute_on_page',
+    arguments: { url: 'https://timeout-test.invalid/', script: 'document.title' },
+  });
+  const execTimeoutResp = await waitForResponse(responses, execTimeoutId);
+  const isTimeoutErr = !!execTimeoutResp.error || execTimeoutResp.result?.isError;
+  assert('execute_on_page timeout returns error', isTimeoutErr, 'Expected error but got result');
+  const execTimeoutMsg = execTimeoutResp.error?.message || execTimeoutResp.result?.content?.[0]?.text || '';
+  assert('execute_on_page timeout contains URL', execTimeoutMsg.includes('timeout-test.invalid'),
+    `error: ${execTimeoutMsg}`);
+
+  // Verify no tab leakage after timeout
+  const tabCheckId3 = mcpRequest(server, 'tools/call', {
+    name: 'list_tabs',
+    arguments: {},
+  });
+  const tabCheckResp3 = await waitForResponse(responses, tabCheckId3);
+  const tabCheck3 = JSON.parse(tabCheckResp3.result?.content?.[0]?.text || '[]');
+  assert('No tab leakage after timeout', Array.isArray(tabCheck3) && tabCheck3.length === 2);
+
+  // ── Step 26: Test extension disconnect / reconnect handling ───────────
   console.log('▶ Testing extension disconnect handling');
   ws.close(1000, 'Test disconnect');
   await sleep(500);
@@ -437,7 +661,7 @@ async function run() {
   const statusData3 = JSON.parse(statusResp3.result?.content?.[0]?.text || '{}');
   assert('Extension reports disconnected after close', statusData3.extensionConnected === false);
 
-  // ── Step 21: Reconnect extension ──────────────────────────────────────
+  // ── Step 27: Reconnect extension ──────────────────────────────────────
   console.log('▶ Reconnecting extension');
   const ws2 = await new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${PORT}`);

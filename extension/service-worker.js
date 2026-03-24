@@ -8,6 +8,7 @@ import { contentHandlers } from './modules/content-extractor.js';
 import { screenshotHandlers } from './modules/screenshot.js';
 import { inspectorHandlers } from './modules/page-inspector.js';
 import { linkHandlers } from './modules/link-discovery.js';
+import { pageHandlers } from './modules/page-executor.js';
 
 // --- Instantiate core modules ---
 
@@ -25,6 +26,7 @@ router.register('screenshot.capture', screenshotHandlers.capture);
 router.register('cookies.get', inspectorHandlers.getCookies);
 router.register('storage.get', inspectorHandlers.getStorage);
 router.register('links.discover', linkHandlers.discoverLinks);
+router.register('page.executeOnPage', pageHandlers.executeOnPage);
 
 const wsClient = new WebSocketClient(async (message) => {
   // Skip responses (e.g. handshake reply) — only route requests from the server

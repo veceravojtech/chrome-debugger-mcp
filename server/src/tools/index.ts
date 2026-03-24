@@ -7,6 +7,7 @@ import { registerInspectTools } from './inspect.js';
 import { registerLinkTools } from './links.js';
 import { registerCrawlTools } from './crawl.js';
 import { registerSourceMapTools } from './source-maps.js';
+import { registerPageTools } from './page.js';
 
 export function registerTools(server: McpServer, bridge: Bridge): void {
   registerStatusTool(server, bridge);
@@ -16,4 +17,5 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
   registerLinkTools(server, bridge);
   registerCrawlTools(server, bridge);
   registerSourceMapTools(server, bridge);
+  registerPageTools(server, bridge);
 }
