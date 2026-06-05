@@ -33,7 +33,7 @@ export class WebSocketClient {
     // Cancel any pending reconnect
     this.#clearReconnectTimer();
 
-    // Read port from storage, default 9222
+    // Read port from storage, fall back to DEFAULT_PORT.
     try {
       const { wsPort } = await chrome.storage.local.get('wsPort');
       if (wsPort != null) {
