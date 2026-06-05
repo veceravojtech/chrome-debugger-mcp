@@ -1,5 +1,7 @@
 import { open, mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { logger } from '../logger.js';
@@ -14,7 +16,10 @@ const CLAIM_TIMEOUT_MS = 10_000;
 export function getLockDir(): string {
   const xdg = process.env.XDG_RUNTIME_DIR;
   if (xdg) return path.join(xdg, 'chrome-debugger-mcp');
-  return path.join(os.tmpdir(), `chrome-debugger-mcp-${process.getuid!()}`);
+  // process.getuid is undefined on Windows; fall back to username for a stable per-user dir.
+  const userKey =
+    process.platform === 'win32' ? os.userInfo().username : String(process.getuid!());
+  return path.join(os.tmpdir(), `chrome-debugger-mcp-${userKey}`);
 }
 
 export function getLockPath(port: number): string {
@@ -25,13 +30,48 @@ function getClaimPath(port: number): string {
   return path.join(getLockDir(), `server-${port}.claim`);
 }
 
-async function isOurProcess(pid: number): Promise<boolean> {
-  try {
-    const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf-8');
-    return cmdline.includes('chrome-debugger-mcp');
-  } catch {
-    return false; // Process doesn't exist
+const execFileAsync = promisify(execFile);
+
+/**
+ * Read the full command line of a process, cross-platform.
+ * Returns null when the process doesn't exist or the command line can't be read.
+ */
+async function getProcessCommand(pid: number): Promise<string | null> {
+  if (process.platform === 'linux') {
+    try {
+      return await readFile(`/proc/${pid}/cmdline`, 'utf-8');
+    } catch {
+      return null; // Process doesn't exist
+    }
   }
+
+  if (process.platform === 'win32') {
+    // wmic is removed on recent Windows 11 — use CIM via PowerShell instead.
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+      ]);
+      return stdout.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // darwin and other POSIX: no /proc — ask ps for the full command line.
+  // `ps -p <pid>` exits non-zero when the process doesn't exist.
+  try {
+    const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'command=']);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function isOurProcess(pid: number): Promise<boolean> {
+  const command = await getProcessCommand(pid);
+  return command !== null && command.includes('chrome-debugger-mcp');
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -213,13 +253,35 @@ async function killExistingServer(lockPath: string): Promise<void> {
 }
 
 /**
- * Find the PID of a process listening on a given port via /proc/net/tcp.
+ * Find the PID of the process listening on a given port, cross-platform.
  * Fallback for when no lock file exists (e.g. legacy server without singleton module).
  */
 export async function findPidOnPort(port: number): Promise<number | null> {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const execFileAsync = promisify(execFile);
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp']);
+      // "  TCP    0.0.0.0:9222    0.0.0.0:0    LISTENING    11120"
+      for (const line of stdout.split('\n')) {
+        const match = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+        if (match && parseInt(match[1], 10) === port) return parseInt(match[2], 10);
+      }
+    } catch {
+      // netstat not available or failed
+    }
+    return null;
+  }
+
+  if (process.platform === 'darwin') {
+    // No ss on macOS — lsof -t prints bare PIDs, exits 1 when nothing listens.
+    try {
+      const { stdout } = await execFileAsync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']);
+      const pid = parseInt(stdout.trim().split('\n')[0], 10);
+      if (!isNaN(pid)) return pid;
+    } catch {
+      // lsof not available or no listener
+    }
+    return null;
+  }
 
   try {
     const { stdout } = await execFileAsync('ss', ['-tlnp', `sport = :${port}`]);
