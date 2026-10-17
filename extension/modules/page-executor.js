@@ -1,14 +1,15 @@
 // Ephemeral page execution handler for MCP bridge.
-// Opens a background tab, waits for load, executes a script, and closes the tab.
+// Opens a tab in the background automation window, waits for load, executes a script, and closes the tab.
 // Guaranteed tab cleanup via try/finally — no tab leakage on any code path.
 
 import { waitForTabLoad } from './tab-lifecycle.js';
+import { openAutomationTab } from './automation-window.js';
 
 async function executeOnPage(params) {
   const startTime = Date.now();
   let tabId;
   try {
-    const tab = await chrome.tabs.create({ url: params.url, active: false });
+    const tab = await openAutomationTab(params.url);
     tabId = tab.id;
     await waitForTabLoad(tabId, params.timeout);
 

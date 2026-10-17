@@ -2,6 +2,7 @@
 // Each handler receives JSON-RPC params and returns a result object.
 
 import { waitForTabLoad } from './tab-lifecycle.js';
+import { getAutomationWindowId, isPlaceholderTab, bringToFront, openAutomationTab } from './automation-window.js';
 
 async function listTabs() {
   const tabs = await chrome.tabs.query({});
@@ -23,6 +24,9 @@ async function openTab(params) {
       throw new Error(`Tab ${params.tabId} not found`);
     }
     await waitForTabLoad(params.tabId);
+    if (params.activate) {
+      await bringToFront(params.tabId);
+    }
     const tab = await chrome.tabs.get(params.tabId);
     return {
       tabId: tab.id,
@@ -41,23 +45,29 @@ async function openTab(params) {
     // Compare normalized URLs (strip trailing slash, fragment, and query)
     const normalize = (u) => u.replace(/\/?([\?#].*)?$/, '');
     const targetNorm = normalize(params.url);
-    const allTabs = await chrome.tabs.query({});
-    const existing = allTabs.filter(t => normalize(t.url ?? '') === targetNorm);
-    if (existing.length > 0) {
-      tabId = existing[0].id;
-      await chrome.tabs.update(tabId, { active: true });
+    // Only reuse tabs in the automation window — the user's tabs are never touched
+    const windowId = await getAutomationWindowId();
+    const ownTabs = await chrome.tabs.query({ windowId });
+    const existing = ownTabs.find(t => !isPlaceholderTab(t) && normalize(t.url ?? '') === targetNorm);
+    if (existing) {
+      tabId = existing.id;
       reused = true;
     }
   }
 
-  // Create new tab if no reuse
+  // Create new tab in the background automation window. It is active only within that
+  // window (so the page renders unthrottled) — the user's windows are untouched.
   if (!tabId) {
-    const created = await chrome.tabs.create({ url: params.url, active: true });
+    const created = await openAutomationTab(params.url);
     tabId = created.id;
   }
 
   // Wait for page load (resolves immediately if already complete)
   await waitForTabLoad(tabId);
+
+  if (params.activate) {
+    await bringToFront(tabId);
+  }
 
   // Get final tab state for title
   const tab = await chrome.tabs.get(tabId);
@@ -80,7 +90,7 @@ async function closeTab(params) {
 
 async function switchTab(params) {
   try {
-    const tab = await chrome.tabs.update(params.tabId, { active: true });
+    const tab = await bringToFront(params.tabId);
     return {
       tabId: tab.id,
       url: tab.url ?? '',

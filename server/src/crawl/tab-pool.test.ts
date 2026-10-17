@@ -36,7 +36,7 @@ describe('TabPool', () => {
       await pool.init();
 
       expect(bridge.send).toHaveBeenCalledTimes(3);
-      expect(bridge.send).toHaveBeenCalledWith('tabs.open', { url: 'about:blank' });
+      expect(bridge.send).toHaveBeenCalledWith('tabs.open', { url: 'about:blank', reuseTab: false });
     });
   });
 

@@ -24,7 +24,7 @@ export class TabPool {
 
   async init(): Promise<void> {
     for (let i = 0; i < this.size; i++) {
-      const result = await this.bridge.send('tabs.open', { url: 'about:blank' }) as { tabId: number };
+      const result = await this.bridge.send('tabs.open', { url: 'about:blank', reuseTab: false }) as { tabId: number };
       this.tabIds.push(result.tabId);
       this.available.add(result.tabId);
     }
